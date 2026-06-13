@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FAILSAFE — Student Risk Dashboard</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { background: #030712; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #f1f5f9; margin: 0; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    .fade-in { animation: fadeIn 0.2s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .bar-fill { transition: width 0.5s cubic-bezier(.4,0,.2,1); }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // ── API Configuration ─────────────────────────────────────────────────────
+    // Local development : leave as ''
+    // Netlify deployment: replace with your Render backend URL
+    //                     e.g. 'https://failsafe-api.onrender.com'
+    const API_BASE = '';
+
+    // ── Utilities ─────────────────────────────────────────────────────────────
+
+    const riskColor = (s) =>
+      s >= 0.8 ? { text: 'text-red-400',    bg: 'bg-red-900/20',    border: 'border-red-800',    bar: 'bg-red-500'    }
+    : s >= 0.5 ? { text: 'text-amber-400',  bg: 'bg-amber-900/20',  border: 'border-amber-800',  bar: 'bg-amber-500'  }
+               : { text: 'text-emerald-400', bg: 'bg-emerald-900/20', border: 'border-emerald-800', bar: 'bg-emerald-500' };
+
+    const riskLabel = (s) => s >= 0.8 ? 'High' : s >= 0.5 ? 'Medium' : 'Low';
+    const pct       = (n) => `${Math.round(n * 100)}%`;
+
+    // ── Small components ──────────────────────────────────────────────────────
+
+    function RiskPill({ score }) {
+      const c = riskColor(score);
+      return (
+        <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold tracking-wide ${c.text} ${c.bg} border ${c.border}`}>
+          {riskLabel(score)}
+        </span>
+      );
+    }
+
+    function RiskBar({ score }) {
+      const c = riskColor(score);
+      return (
+        <div className="flex items-center gap-2.5">
+          <div className="w-24 bg-gray-800 rounded-full h-1.5 overflow-hidden">
+            <div className={`${c.bar} h-1.5 rounded-full bar-fill`} style={{ width: pct(score) }} />
+          </div>
+          <span className={`text-sm font-mono font-medium ${c.text}`}>{pct(score)}</span>
+        </div>
+      );
+    }
+
+    function StatCard({ label, value, sub, accent }) {
+      const accents = {
+        default: 'border-gray-800 text-gray-100',
+        red:     'border-red-900/60 text-red-400',
+        green:   'border-emerald-900/60 text-emerald-400',
+      };
+      const cls = accents[accent] || accents.default;
+      return (
+        <div className={`bg-gray-900/70 border ${cls} rounded-xl p-5`}>
+          <p className="text-gray-500 text-xs uppercase tracking-widest mb-1.5">{label}</p>
+          <p className={`text-3xl font-bold ${cls.split(' ')[1]}`}>{value}</p>
+          {sub && <p className="text-gray-600 text-xs mt-1">{sub}</p>}
+        </div>
+      );
+    }
+
+    // ── SHAP chart ────────────────────────────────────────────────────────────
+
+    function SHAPChart({ shapValues }) {
+      const entries = Object.entries(shapValues)
+        .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+        .slice(0, 12);
+
+      if (entries.length === 0) return <p className="text-gray-600 text-sm">No SHAP data available.</p>;
+
+      const maxAbs = Math.max(...entries.map(([, v]) => Math.abs(v)), 0.01);
+      const rowH   = 28;
+      const labelW = 120;
+      const valW   = 60;
+      const padX   = 10;
+      const svgW   = 580;
+      const chartW = svgW - labelW - valW - padX * 2;
+      const center = labelW + chartW / 2;
+      const svgH   = entries.length * (rowH + 6) + 32;
+
+      return (
+        <svg width="100%" viewBox={`0 0 ${svgW} ${svgH}`} className="overflow-visible">
+          <line x1={center} y1={0} x2={center} y2={svgH - 26}
+            stroke="#1e293b" strokeWidth={1.5} />
+
+          {entries.map(([feat, val], i) => {
+            const y    = i * (rowH + 6) + 2;
+            const bw   = (Math.abs(val) / maxAbs) * (chartW / 2 - 6);
+            const x    = val >= 0 ? center : center - bw;
+            const fill  = val >= 0 ? '#ef4444' : '#10b981';
+            const tFill = val >= 0 ? '#fca5a5' : '#6ee7b7';
+            return (
+              <g key={feat}>
+                <text x={labelW - 8} y={y + rowH / 2 + 4}
+                  textAnchor="end" fill="#64748b" fontSize="12"
+                  fontFamily="ui-monospace, 'Cascadia Code', monospace">
+                  {feat}
+                </text>
+                <rect x={x} y={y + 5} width={Math.max(bw, 2)} height={rowH - 10}
+                  fill={fill} rx={2} opacity={0.75} />
+                <text x={svgW - valW + 4} y={y + rowH / 2 + 4}
+                  textAnchor="start" fill={tFill} fontSize="11"
+                  fontFamily="ui-monospace, 'Cascadia Code', monospace">
+                  {val >= 0 ? '+' : ''}{val.toFixed(3)}
+                </text>
+              </g>
+            );
+          })}
+
+          <text x={center - chartW / 4} y={svgH - 6} textAnchor="middle" fill="#334155" fontSize="11">
+            Reduces risk
+          </text>
+          <text x={center + chartW / 4} y={svgH - 6} textAnchor="middle" fill="#334155" fontSize="11">
+            Increases risk
+          </text>
+        </svg>
+      );
+    }
+
+    // ── Upload ────────────────────────────────────────────────────────────────
+
+    function UploadView({ onUpload }) {
+      const [file, setFile]         = useState(null);
+      const [loading, setLoading]   = useState(false);
+      const [error, setError]       = useState(null);
+      const [dragging, setDragging] = useState(false);
+      const inputRef = useRef();
+
+      const handleFile = (f) => {
+        if (!f) return;
+        if (!f.name.toLowerCase().endsWith('.csv')) {
+          setError('Please select a .csv file.');
+          return;
+        }
+        setFile(f);
+        setError(null);
+      };
+
+      const handleUpload = async () => {
+        if (!file) return;
+        setLoading(true);
+        setError(null);
+        try {
+          const fd = new FormData();
+          fd.append('file', file);
+          const res = await fetch(`${API_BASE}/upload`, { method: 'POST', body: fd });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `Server returned ${res.status}`);
+          }
+          onUpload(await res.json());
+        } catch (e) {
+          setError(e.message);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      return (
+        <div className="min-h-screen flex flex-col items-center justify-center p-8 fade-in">
+
+          <div className="text-center mb-10">
+            <h1 className="text-5xl font-black tracking-tight text-white">FAILSAFE</h1>
+            <p className="text-gray-400 mt-2">Early Student Failure Risk Detection System</p>
+            <p className="text-gray-600 text-sm mt-1">
+              Prem Kadam &nbsp;&middot;&nbsp; Bhavit &nbsp;&middot;&nbsp; Krishna Jain &nbsp;&middot;&nbsp; IIT Guwahati
+            </p>
+          </div>
+
+          <div className="w-full max-w-md">
+            <div
+              onDrop={(e) => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files[0]); }}
+              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onClick={() => inputRef.current.click()}
+              className={`
+                border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer select-none
+                transition-all duration-200
+                ${file      ? 'border-emerald-700 bg-emerald-900/10'
+                : dragging  ? 'border-blue-600 bg-blue-900/10'
+                            : 'border-gray-700 bg-gray-900/50 hover:border-gray-500'}
+              `}
+            >
+              <input
+                ref={inputRef} type="file" accept=".csv" className="hidden"
+                onChange={(e) => handleFile(e.target.files[0])}
+              />
+
+              {file ? (
+                <>
+                  <svg className="w-10 h-10 mx-auto mb-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <p className="text-emerald-400 font-semibold">{file.name}</p>
+                  <p className="text-gray-500 text-sm mt-1">{(file.size / 1024).toFixed(1)} KB</p>
+                </>
+              ) : (
+                <>
+                  <svg className="w-10 h-10 mx-auto mb-3 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                      d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                  <p className="text-gray-300 font-medium">Drop student CSV here</p>
+                  <p className="text-gray-600 text-sm mt-1">or click to browse</p>
+                  <p className="text-gray-700 text-xs mt-3 font-mono">student-mat.csv &nbsp; student-por.csv</p>
+                </>
+              )}
+            </div>
+
+            {error && (
+              <p className="mt-3 text-red-400 text-sm text-center px-2">{error}</p>
+            )}
+
+            <button
+              onClick={handleUpload}
+              disabled={!file || loading}
+              className="mt-4 w-full py-3.5 rounded-xl font-semibold text-white text-sm tracking-wide
+                bg-gray-700 hover:bg-gray-600 active:scale-[0.98] transition-all
+                disabled:opacity-30 disabled:cursor-not-allowed disabled:active:scale-100"
+            >
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" strokeOpacity="0.25"/>
+                    <path d="M22 12a10 10 0 00-10-10" stroke="currentColor" strokeWidth="4" strokeLinecap="round"/>
+                  </svg>
+                  Analysing...
+                </span>
+              ) : 'Upload and Analyse'}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Dashboard ─────────────────────────────────────────────────────────────
+
+    function DashboardView({ data, onSelect, onNewUpload }) {
+      const [search, setSearch] = useState('');
+      const [filter, setFilter] = useState('all');
+
+      const students = (data.students || [])
+        .filter(s =>
+          filter === 'atrisk' ? s.at_risk :
+          filter === 'safe'   ? !s.at_risk :
+          true
+        )
+        .filter(s => s.student_id.toLowerCase().includes(search.toLowerCase()))
+        .sort((a, b) => b.risk_score - a.risk_score);
+
+      return (
+        <div className="min-h-screen p-6 max-w-6xl mx-auto fade-in">
+
+          {/* Header */}
+          <div className="flex items-center justify-between mb-8">
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight">FAILSAFE &mdash; Risk Dashboard</h1>
+              <p className="text-gray-600 text-sm mt-0.5">
+                {data.total} students analysed &nbsp;&middot;&nbsp;{' '}
+                {new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </p>
+            </div>
+            <button
+              onClick={onNewUpload}
+              className="px-4 py-2 rounded-lg text-sm text-gray-400 border border-gray-700
+                hover:border-gray-500 hover:text-gray-200 transition-all"
+            >
+              New upload
+            </button>
+          </div>
+
+          {/* Summary cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+            <StatCard label="Total Students" value={data.total} />
+            <StatCard label="At Risk"        value={data.at_risk}
+              sub={`${((data.at_risk / data.total) * 100).toFixed(1)}% of class`} accent="red" />
+            <StatCard label="Safe"           value={data.safe}
+              sub={`${((data.safe / data.total) * 100).toFixed(1)}% of class`} accent="green" />
+            <StatCard label="Average Risk Score" value={pct(data.avg_risk)} />
+          </div>
+
+          {/* Distribution */}
+          <div className="bg-gray-900/70 border border-gray-800 rounded-xl p-5 mb-5">
+            <p className="text-gray-500 text-xs uppercase tracking-widest mb-4">Risk Distribution</p>
+            <div className="space-y-3">
+              {[
+                { label: 'High     >=80%', count: data.high_risk, bar: 'bg-red-500',     text: 'text-red-400'     },
+                { label: 'Medium  50-79%', count: data.med_risk,  bar: 'bg-amber-500',   text: 'text-amber-400'   },
+                { label: 'Low      <50%',  count: data.low_risk,  bar: 'bg-emerald-500', text: 'text-emerald-400' },
+              ].map(({ label, count, bar, text }) => (
+                <div key={label} className="flex items-center gap-3">
+                  <span className="text-gray-600 text-xs font-mono w-32 shrink-0">{label}</span>
+                  <div className="flex-1 bg-gray-800 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className={`${bar} h-1.5 rounded-full bar-fill`}
+                      style={{ width: `${(count / data.total) * 100}%` }}
+                    />
+                  </div>
+                  <span className={`${text} text-xs font-mono w-24 text-right shrink-0`}>
+                    {count} &nbsp;({((count / data.total) * 100).toFixed(1)}%)
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Table */}
+          <div className="bg-gray-900/70 border border-gray-800 rounded-xl overflow-hidden">
+            <div className="p-4 border-b border-gray-800 flex flex-wrap items-center gap-3">
+              <input
+                className="flex-1 min-w-40 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5
+                  text-sm text-gray-200 placeholder-gray-600
+                  focus:outline-none focus:border-gray-500 transition-colors"
+                placeholder="Search by student ID..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <div className="flex gap-1">
+                {[['all', 'All'], ['atrisk', 'At Risk'], ['safe', 'Safe']].map(([f, label]) => (
+                  <button
+                    key={f}
+                    onClick={() => setFilter(f)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+                      ${filter === f ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-300'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="text-gray-600 text-xs uppercase tracking-widest border-b border-gray-800/60">
+                    <th className="px-5 py-3 text-left font-medium">Student</th>
+                    <th className="px-5 py-3 text-left font-medium">Risk Score</th>
+                    <th className="px-5 py-3 text-left font-medium">Level</th>
+                    <th className="px-5 py-3 text-left font-medium">Recommendations</th>
+                    <th className="px-5 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {students.map((s) => {
+                    const plans = typeof s.interventions === 'string'
+                      ? JSON.parse(s.interventions) : s.interventions;
+                    return (
+                      <tr
+                        key={s.student_id}
+                        onClick={() => onSelect(s.student_id)}
+                        className="border-b border-gray-800/40 hover:bg-gray-800/30 cursor-pointer transition-colors group"
+                      >
+                        <td className="px-5 py-3.5 font-mono text-sm text-gray-200">{s.student_id}</td>
+                        <td className="px-5 py-3.5"><RiskBar score={s.risk_score} /></td>
+                        <td className="px-5 py-3.5"><RiskPill score={s.risk_score} /></td>
+                        <td className="px-5 py-3.5 text-gray-500 text-sm">
+                          {s.at_risk
+                            ? `${plans.length} intervention${plans.length !== 1 ? 's' : ''}`
+                            : 'Monitoring only'}
+                        </td>
+                        <td className="px-5 py-3.5 text-right text-gray-700 group-hover:text-gray-400 transition-colors text-sm">
+                          View
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {students.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-5 py-12 text-center text-gray-600 text-sm">
+                        No students match the current filter.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="px-5 py-3 border-t border-gray-800 text-gray-600 text-xs">
+              Showing {students.length} of {data.total} students
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Student Detail ────────────────────────────────────────────────────────
+
+    function StudentDetailView({ studentId, onBack }) {
+      const [student, setStudent] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [error, setError]     = useState(null);
+
+      useEffect(() => {
+        fetch(`${API_BASE}/students/${studentId}`)
+          .then((r) => { if (!r.ok) throw new Error('Student not found.'); return r.json(); })
+          .then((d)  => { setStudent(d); setLoading(false); })
+          .catch((e) => { setError(e.message); setLoading(false); });
+      }, [studentId]);
+
+      if (loading) return (
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="flex items-center gap-3 text-gray-500 text-sm">
+            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" strokeOpacity="0.25"/>
+              <path d="M22 12a10 10 0 00-10-10" stroke="currentColor" strokeWidth="4" strokeLinecap="round"/>
+            </svg>
+            Loading student data...
+          </div>
+        </div>
+      );
+
+      if (error) return (
+        <div className="min-h-screen flex flex-col items-center justify-center gap-4">
+          <p className="text-red-400 text-sm">{error}</p>
+          <button onClick={onBack} className="text-gray-400 hover:text-white text-sm transition-colors">
+            Back to dashboard
+          </button>
+        </div>
+      );
+
+      const c   = riskColor(student.risk_score);
+      const pctVal = Math.round(student.risk_score * 100);
+
+      const DISPLAY_KEYS = ['G1','G2','absences','failures','studytime','Dalc','Walc','health','famrel','goout','age','Medu'];
+      const displayFeatures = DISPLAY_KEYS.filter(k => student.features[k] !== undefined);
+
+      const isKeyRisk = (k, v) =>
+        (k === 'G1' || k === 'G2') && v < 10 ||
+        k === 'absences' && v > 6 ||
+        k === 'failures' && v >= 1;
+
+      return (
+        <div className="min-h-screen p-6 max-w-4xl mx-auto fade-in">
+
+          {/* Back */}
+          <button
+            onClick={onBack}
+            className="flex items-center gap-1.5 text-gray-500 hover:text-gray-200 mb-6 text-sm transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+            Back to Dashboard
+          </button>
+
+          {/* Header */}
+          <div className="flex items-start justify-between gap-4 mb-6">
+            <div>
+              <p className="text-gray-600 text-xs uppercase tracking-widest mb-1">Student Report</p>
+              <h1 className="text-4xl font-black font-mono">{student.student_id}</h1>
+            </div>
+            <div className={`text-right px-6 py-4 rounded-xl border ${c.border} ${c.bg}`}>
+              <p className={`text-4xl font-black font-mono ${c.text}`}>{pctVal}%</p>
+              <p className={`text-xs font-semibold tracking-widest mt-1 uppercase ${c.text}`}>
+                {student.at_risk ? 'At Risk' : 'Safe'}
+              </p>
+            </div>
+          </div>
+
+          {/* SHAP chart */}
+          <div className="bg-gray-900/70 border border-gray-800 rounded-xl p-6 mb-5">
+            <p className="text-gray-400 text-xs uppercase tracking-widest mb-1">Feature Contributions</p>
+            <p className="text-gray-600 text-xs mb-5">
+              What pushed this student's predicted risk score up or down
+            </p>
+            <SHAPChart shapValues={student.shap_values} />
+            <p className="text-gray-700 text-xs mt-4 text-center">
+              Red bars increase predicted risk &nbsp;&middot;&nbsp; Green bars reduce it
+            </p>
+          </div>
+
+          {/* Interventions / Monitoring — always shown, title changes based on risk */}
+          <div className={`bg-gray-900/70 border rounded-xl p-6 mb-5 ${student.at_risk ? 'border-red-900/50' : 'border-gray-800'}`}>
+            <p className={`text-xs uppercase tracking-widest mb-4 ${student.at_risk ? 'text-red-400' : 'text-gray-400'}`}>
+              {student.at_risk ? 'Recommended Interventions' : 'Monitoring Recommendations'}
+            </p>
+            <div className="space-y-3">
+              {student.interventions.map((iv, i) => (
+                <div key={i} className="flex gap-3 items-start">
+                  <span className={`font-mono text-sm mt-0.5 shrink-0 ${student.at_risk ? 'text-red-700' : 'text-gray-600'}`}>
+                    {i + 1}.
+                  </span>
+                  <p className="text-gray-300 text-sm leading-relaxed">{iv}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Feature values */}
+          <div className="bg-gray-900/70 border border-gray-800 rounded-xl p-6">
+            <p className="text-gray-400 text-xs uppercase tracking-widest mb-4">Student Feature Values</p>
+            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
+              {displayFeatures.map((k) => {
+                const v       = student.features[k];
+                const flagged = isKeyRisk(k, v);
+                return (
+                  <div
+                    key={k}
+                    className={`rounded-lg p-3 border ${
+                      flagged ? 'border-red-900/50 bg-red-900/10' : 'border-gray-800 bg-gray-800/40'
+                    }`}
+                  >
+                    <p className="text-gray-600 text-xs font-mono">{k}</p>
+                    <p className={`font-mono font-bold text-lg mt-0.5 ${flagged ? 'text-red-400' : 'text-gray-200'}`}>
+                      {Math.round(v * 10) / 10}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+        </div>
+      );
+    }
+
+    // ── App ───────────────────────────────────────────────────────────────────
+
+    function App() {
+      const [view,       setView]       = useState('upload');
+      const [dashData,   setDashData]   = useState(null);
+      const [selectedId, setSelectedId] = useState(null);
+
+      const handleUpload = useCallback((data) => {
+        setDashData(data);
+        setView('dashboard');
+      }, []);
+
+      const handleSelect = useCallback((id) => {
+        setSelectedId(id);
+        setView('student');
+      }, []);
+
+      if (view === 'upload')    return <UploadView onUpload={handleUpload} />;
+      if (view === 'dashboard') return <DashboardView data={dashData} onSelect={handleSelect} onNewUpload={() => setView('upload')} />;
+      if (view === 'student')   return <StudentDetailView studentId={selectedId} onBack={() => setView('dashboard')} />;
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
