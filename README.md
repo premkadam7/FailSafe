@@ -6,6 +6,10 @@ Predicts which students are at risk of failing before the semester ends, using a
 
 ---
 
+Refer to **report.pdf** for more details.
+
+---
+
 **Live Demo:** https://symphonious-fairy-50ab14.netlify.app/
 
 ---
