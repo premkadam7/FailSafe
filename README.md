@@ -3,7 +3,7 @@
 **Prem Kadam · Bhavit · Krishna Jain | IIT Guwahati**
 
 Predicts which students are at risk of failing before the semester ends, using attendance, grades, and behavioural data. Every prediction is explained using SHAP so faculty know exactly why a student was flagged — and what to do about it.
-
+Refer to report.pdf for more details.
 ---
 
 **Live Demo:** https://symphonious-fairy-50ab14.netlify.app/
